@@ -1,4 +1,4 @@
-import { computeRelativityState } from '../physics/relativity.js';
+import { computeRelativityState, lengthContractionRatio } from '../physics/relativity.js';
 
 function fmt(value, digits = 3) {
   if (!Number.isFinite(value)) return '--';
@@ -23,6 +23,8 @@ export class Hud {
       shipDistance: document.getElementById('hud-ship-distance'),
       eta: document.getElementById('hud-eta'),
       lengthRatio: document.getElementById('hud-length-ratio'),
+      rodA: document.getElementById('hud-rod-a'),
+      rodB: document.getElementById('hud-rod-b'),
       badge: document.getElementById('mode-badge')
     };
   }
@@ -37,6 +39,13 @@ export class Hud {
     this.el.shipDistance.textContent = `${fmt(r.shipDistance, 2)} ly`;
     this.el.eta.textContent = `${fmtYears(r.etaEarth)} / ${fmtYears(r.etaShip)}`;
     this.el.lengthRatio.textContent = fmt(r.lengthRatio, 3);
+    // Rod lengths (L8): Rod A contracts in earth frame, Rod B is always rest length
+    const rodRest = 5.20; // matches MeasurementRod BoxGeometry Z
+    const rodALen = this.state.frame === 'earth'
+      ? rodRest * r.lengthRatio
+      : rodRest;
+    this.el.rodA.textContent = fmt(rodALen, 2);
+    this.el.rodB.textContent = fmt(rodRest, 2);
     this.el.badge.textContent = `${this.state.viewMode === 'measured' ? 'Measured' : 'Observed'} / ${this.state.frame} / ${this.state.viewPerspective === 'firstPerson' ? '1P' : '3P'}`;
   }
 }
