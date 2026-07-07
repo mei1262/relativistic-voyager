@@ -11,11 +11,12 @@ import { QuizSystem } from '../ui/QuizSystem.js';
 import { StarField } from '../visual/StarField.js';
 import { Spacecraft } from '../visual/Spacecraft.js';
 import { CockpitInterior } from '../visual/CockpitInterior.js';
+import { DualClockPanel } from '../ui/DualClockPanel.js';
 import { SpacetimeDiagram } from '../visual/SpacetimeDiagram.js';
 import { SolarSystem, PLANET_INFO } from '../visual/SolarSystem.js';
 import { addReferenceScene } from '../visual/SceneObjects.js';
 import { EngineAudio } from '../audio/EngineAudio.js';
-import { computeRelativityState, DEFAULT_TARGET_DISTANCE_LY } from '../physics/relativity.js';
+import { computeRelativityState, DEFAULT_TARGET_DISTANCE_LY, lengthContractionRatio } from '../physics/relativity.js';
 
 /**
  * RelativisticVoyagerApp — main application controller.
@@ -84,6 +85,8 @@ export class RelativisticVoyagerApp {
 
     // Relativistic visual effects
     this.baseFov = 65;        // camera FOV at rest
+    this._lastAberrationBeta = -1;   // cached beta for stellar aberration
+    this._aberrationActive = false;  // whether aberration is currently applied
 
     // Raycaster for planet click detection
     this.raycaster = new THREE.Raycaster();
@@ -162,6 +165,8 @@ export class RelativisticVoyagerApp {
 
   setupUi() {
     this.hud = new Hud(this.state);
+    this.dualClock = new DualClockPanel(this.state);
+    this.dualClock.init();
     this.controlPanel = new ControlPanel(this.state, this.logger);
     this.controlPanel.onChange = () => this.onStateChanged();
     this.controlPanel.init();
@@ -346,6 +351,7 @@ export class RelativisticVoyagerApp {
       this.camera.aspect = window.innerWidth / window.innerHeight;
       this.camera.updateProjectionMatrix();
       this.renderer.setSize(window.innerWidth, window.innerHeight);
+      this.dualClock.resize();
     });
   }
 
@@ -504,6 +510,23 @@ export class RelativisticVoyagerApp {
       vignette.style.opacity = Math.min(0.92, b * 1.1);
     }
 
+    // Stellar aberration — first-person only, recompute only when beta changes
+    if (this.state.viewPerspective === 'firstPerson') {
+      if (!this._aberrationActive || Math.abs(b - this._lastAberrationBeta) > 0.001) {
+        if (b > 0.001) {
+          this.starField.applyAberration(b);
+        } else {
+          this.starField.resetAberration();
+        }
+        this._lastAberrationBeta = b;
+        this._aberrationActive = true;
+      }
+    } else if (this._aberrationActive) {
+      this.starField.resetAberration();
+      this._aberrationActive = false;
+      this._lastAberrationBeta = -1;
+    }
+
     // ---- Animate solar system -------------------------------------------------
     if (this.solarSystem) {
       this.solarSystem.update(dt);
@@ -517,6 +540,23 @@ export class RelativisticVoyagerApp {
     if (this.keys.down) verticalInput -= 1;
     this.spacecraft.update(this.state.beta, this.keys.forward, verticalInput);
 
+    // ---- Spacecraft length contraction (Earth frame) ----------------------------
+    const baseScale = 0.12;
+    const ratio = lengthContractionRatio(this.state.beta);
+    if (this.state.frame === 'earth'
+        && this.state.beta > 0.01) {
+      if (this.state.viewMode === 'measured') {
+        this.spacecraft.group.scale.set(baseScale, baseScale, baseScale * ratio);
+        this.spacecraft.group.rotation.x = 0;
+      } else {
+        this.spacecraft.group.scale.set(baseScale, baseScale, baseScale * (ratio * 0.92 + 0.08));
+        this.spacecraft.group.rotation.x = this.state.beta * 0.3;
+      }
+    } else {
+      this.spacecraft.group.scale.setScalar(baseScale);
+      this.spacecraft.group.rotation.x = 0;
+    }
+
     // Cockpit interior — animate indicator lights
     this.cockpit.update(dt, this.state.beta);
     // Engine audio — pitch & volume track current speed (mute when paused)
@@ -526,6 +566,7 @@ export class RelativisticVoyagerApp {
       this.engineAudio.update(this.currentSpeed / this.maxSpeed, this.keys.forward);
     }
     this.hud.update();
+    this.dualClock.update(r);
     this.missionSystem.update();
     this.spacetimeDiagram.update();
 

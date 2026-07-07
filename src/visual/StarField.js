@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { aberratedCosTheta } from '../physics/relativity.js';
 
 /**
  * StarField — a rich, bright star field filling the entire solar system volume.
@@ -10,7 +11,7 @@ import * as THREE from 'three';
  *  - Milky Way band of denser stars along a plane
  *  - Temperature-based star colors (blue-white → yellow → orange)
  *  - Subtle twinkling animation
- *  - Completely static — no relativistic aberration or Doppler shift
+ *  - Relativistic stellar aberration (first-person only, triggered by App.js)
  */
 
 // Random direction on unit sphere
@@ -124,7 +125,8 @@ export class StarField {
 
     this.layers.push({
       points: new THREE.Points(geo, mat),
-      count
+      count,
+      originalPositions: new Float32Array(positions)  // cached for aberration
     });
   }
 
@@ -164,9 +166,70 @@ export class StarField {
     this.milkyWayPoints = new THREE.Points(geo, mat);
     this.layers.push({
       points: this.milkyWayPoints,
-      count
+      count,
+      originalPositions: new Float32Array(positions)
     });
   }
+
+  // -- Relativistic stellar aberration ---------------------------------------
+
+  /**
+   * Apply relativistic aberration to all stars.
+   * Ship motion is along -Z (forward). Stars ahead (-Z) crowd together;
+   * stars behind (+Z) spread apart.
+   *
+   * @param {number} beta — current speed fraction v/c
+   */
+  applyAberration(beta) {
+    for (const layer of this.layers) {
+      const orig = layer.originalPositions;
+      const geo = layer.points.geometry;
+      const posArr = geo.attributes.position.array;
+      const count = layer.count;
+
+      for (let i = 0; i < count; i++) {
+        const px = orig[i * 3];
+        const py = orig[i * 3 + 1];
+        const pz = orig[i * 3 + 2];
+
+        const r = Math.sqrt(px * px + py * py + pz * pz);
+        if (r < 0.001) continue;
+
+        // cosθ = 1 for star directly ahead (-Z direction)
+        const cosTheta = -pz / r;
+        const cosThetaPrime = aberratedCosTheta(beta, cosTheta);
+        const sinThetaPrime = Math.sqrt(Math.max(0, 1 - cosThetaPrime * cosThetaPrime));
+
+        // Preserve azimuth φ around Z-axis; only remap polar angle θ
+        const xyDist = Math.sqrt(px * px + py * py);
+        if (xyDist > 0.0001) {
+          const scale = (sinThetaPrime * r) / xyDist;
+          posArr[i * 3]     = px * scale;
+          posArr[i * 3 + 1] = py * scale;
+        } else {
+          posArr[i * 3]     = 0;
+          posArr[i * 3 + 1] = 0;
+        }
+        posArr[i * 3 + 2] = -cosThetaPrime * r;
+      }
+
+      geo.attributes.position.needsUpdate = true;
+    }
+  }
+
+  /**
+   * Reset star positions to their original configuration (β=0).
+   */
+  resetAberration() {
+    for (const layer of this.layers) {
+      const orig = layer.originalPositions;
+      const posArr = layer.points.geometry.attributes.position.array;
+      posArr.set(orig);
+      layer.points.geometry.attributes.position.needsUpdate = true;
+    }
+  }
+
+  // -- Scene attachment ------------------------------------------------------
 
   addTo(scene) {
     scene.add(this.container);
