@@ -37,6 +37,6 @@ export class Hud {
     this.el.shipDistance.textContent = `${fmt(r.shipDistance, 2)} ly`;
     this.el.eta.textContent = `${fmtYears(r.etaEarth)} / ${fmtYears(r.etaShip)}`;
     this.el.lengthRatio.textContent = fmt(r.lengthRatio, 3);
-    this.el.badge.textContent = `${this.state.viewMode === 'measured' ? 'Measured' : 'Observed'} / ${this.state.frame}`;
+    this.el.badge.textContent = `${this.state.viewMode === 'measured' ? 'Measured' : 'Observed'} / ${this.state.frame} / ${this.state.viewPerspective === 'firstPerson' ? '1P' : '3P'}`;
   }
 }

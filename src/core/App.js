@@ -10,6 +10,7 @@ import { ConceptPanel } from '../ui/ConceptPanel.js';
 import { QuizSystem } from '../ui/QuizSystem.js';
 import { StarField } from '../visual/StarField.js';
 import { Spacecraft } from '../visual/Spacecraft.js';
+import { CockpitInterior } from '../visual/CockpitInterior.js';
 import { SpacetimeDiagram } from '../visual/SpacetimeDiagram.js';
 import { SolarSystem, PLANET_INFO } from '../visual/SolarSystem.js';
 import { addReferenceScene } from '../visual/SceneObjects.js';
@@ -28,9 +29,10 @@ import { computeRelativityState, DEFAULT_TARGET_DISTANCE_LY } from '../physics/r
  * - E             : move down
  * - Shift         : increase speed (beta)
  * - Ctrl          : decrease speed (beta)
+ * - V             : toggle first-person / third-person view
  * - Speed = beta (0–0.99) × maxSpeed
  *
- * Camera: fixed third-person chase cam behind the spacecraft.
+ * Camera: supports first-person (cockpit) and third-person chase cam.
  * Star field: rich, static, centered at origin.
  * Planet info: click any planet to see details.
  */
@@ -40,6 +42,7 @@ export class RelativisticVoyagerApp {
       beta: 0,
       frame: 'earth',
       viewMode: 'measured',
+      viewPerspective: 'thirdPerson',
       paused: false,
       earthTime: 0,
       earthDistance: DEFAULT_TARGET_DISTANCE_LY,
@@ -52,6 +55,9 @@ export class RelativisticVoyagerApp {
 
     // Camera offset in ship-local space (small — ship is scaled down 10×)
     this.cameraLocalOffset = new THREE.Vector3(0, 0.4, 1.2);
+
+    // First-person cockpit camera offset (ship-local space, ship scale 0.12)
+    this.firstPersonOffset = new THREE.Vector3(0, 0.06, -0.05);
 
     // Keyboard state
     this.keys = {
@@ -145,6 +151,11 @@ export class RelativisticVoyagerApp {
     this.spacecraft.setWorldPosition(
       this.shipPosition.x, this.shipPosition.y, this.shipPosition.z
     );
+
+    // Cockpit interior — attached to camera, shown only in first-person
+    this.cockpit = new CockpitInterior();
+    this.cockpit.attachTo(this.camera);
+    this.cockpit.hide();
   }
 
   // ---- UI --------------------------------------------------------------------
@@ -202,6 +213,12 @@ export class RelativisticVoyagerApp {
       this.engineAudio.init();
     }
 
+    // V key — toggle perspective (only on press, not release)
+    if (key === 'v' || key === 'V') {
+      if (pressed) this._togglePerspective();
+      return;
+    }
+
     if (key === 'ArrowUp'    || key === 'w' || key === 'W') this.keys.forward  = pressed;
     if (key === 'ArrowDown'  || key === 's' || key === 'S') this.keys.backward = pressed;
     if (key === 'ArrowLeft'  || key === 'a' || key === 'A') this.keys.left     = pressed;
@@ -210,6 +227,43 @@ export class RelativisticVoyagerApp {
     if (key === 'e' || key === 'E') this.keys.down = pressed;
     if (key === 'Shift')   this.keys.shift = pressed;
     if (key === 'Control') this.keys.ctrl  = pressed;
+  }
+
+  /** Toggle between third-person and first-person perspective */
+  _togglePerspective() {
+    const next = this.state.viewPerspective === 'thirdPerson'
+      ? 'firstPerson' : 'thirdPerson';
+    this._setPerspective(next);
+  }
+
+  /**
+   * Set perspective to a specific mode. Called by V-key toggle and UI dropdown.
+   * @param {'firstPerson' | 'thirdPerson'} mode
+   */
+  _setPerspective(mode) {
+    if (this.state.viewPerspective === mode) return;
+    this.state.viewPerspective = mode;
+
+    // Sync the dropdown in the control panel
+    const sel = document.getElementById('perspective-select');
+    if (sel) sel.value = mode;
+
+    // Adjust FOV: wider for first-person immersion
+    if (mode === 'firstPerson') {
+      this.camera.fov = 90;
+      this.spacecraft.group.visible = false;
+      this.cockpit.show();
+    } else {
+      this.camera.fov = this.baseFov;
+      this.spacecraft.group.visible = true;
+      this.cockpit.hide();
+    }
+    this.camera.updateProjectionMatrix();
+
+    this.logger.log('perspective_change', {
+      viewPerspective: mode,
+      fov: this.camera.fov
+    });
   }
 
   // ---- Mouse / Planet click detection ----------------------------------------
@@ -412,14 +466,35 @@ export class RelativisticVoyagerApp {
       }
     }
 
-    // ---- Camera (fixed chase cam behind ship) ---------------------------------
-    const rotatedOffset = this.cameraLocalOffset.clone();
-    rotatedOffset.applyAxisAngle(new THREE.Vector3(0, 1, 0), this.shipHeading);
-    const desiredCamPos = this.shipPosition.clone().add(rotatedOffset);
+    // ---- Camera (first-person cockpit or third-person chase cam) --------------
+    if (this.state.viewPerspective === 'firstPerson') {
+      // First-person: camera at cockpit position, looking forward
+      const fpOffset = this.firstPersonOffset.clone();
+      fpOffset.applyAxisAngle(new THREE.Vector3(0, 1, 0), this.shipHeading);
+      const fpCamPos = this.shipPosition.clone().add(fpOffset);
 
-    this._smoothCamPos.lerp(desiredCamPos, this.cameraLerp);
-    this.camera.position.copy(this._smoothCamPos);
-    this.camera.lookAt(this.shipPosition);
+      // Faster lerp for responsive first-person feel
+      this._smoothCamPos.lerp(fpCamPos, this.cameraLerp * 2.0);
+      this.camera.position.copy(this._smoothCamPos);
+
+      // Look in ship's forward direction (a point far ahead)
+      const forward = new THREE.Vector3(
+        -Math.sin(this.shipHeading), 0, -Math.cos(this.shipHeading)
+      );
+      const lookTarget = this.shipPosition.clone().add(
+        forward.multiplyScalar(100)
+      );
+      this.camera.lookAt(lookTarget);
+    } else {
+      // Third-person: chase cam behind the spacecraft
+      const rotatedOffset = this.cameraLocalOffset.clone();
+      rotatedOffset.applyAxisAngle(new THREE.Vector3(0, 1, 0), this.shipHeading);
+      const desiredCamPos = this.shipPosition.clone().add(rotatedOffset);
+
+      this._smoothCamPos.lerp(desiredCamPos, this.cameraLerp);
+      this.camera.position.copy(this._smoothCamPos);
+      this.camera.lookAt(this.shipPosition);
+    }
 
     // ---- Relativistic visual effects -------------------------------------------
     // Vignette overlay — darkens periphery at high β for tunnel sensation
@@ -441,6 +516,8 @@ export class RelativisticVoyagerApp {
     if (this.keys.up)   verticalInput += 1;
     if (this.keys.down) verticalInput -= 1;
     this.spacecraft.update(this.state.beta, this.keys.forward, verticalInput);
+    // Cockpit interior — animate indicator lights
+    this.cockpit.update(dt, this.state.beta);
     // Engine audio — pitch & volume track current speed (mute when paused)
     if (this.state.paused) {
       this.engineAudio.mute();

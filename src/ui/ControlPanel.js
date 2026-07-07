@@ -9,6 +9,7 @@ export class ControlPanel {
     this.slider = document.getElementById('speed-slider');
     this.frameSelect = document.getElementById('frame-select');
     this.viewModeSelect = document.getElementById('view-mode-select');
+    this.perspectiveSelect = document.getElementById('perspective-select');
     this.pauseBtn = document.getElementById('pause-btn');
     this.resetBtn = document.getElementById('reset-btn');
     this.startBtn = document.getElementById('start-btn');
@@ -46,6 +47,18 @@ export class ControlPanel {
       this.onChange();
     });
 
+    this.perspectiveSelect.addEventListener('change', () => {
+      const mode = this.perspectiveSelect.value;
+      const app = window.rvApp;
+      if (app && app._setPerspective) {
+        app._setPerspective(mode);
+      } else {
+        this.state.viewPerspective = mode;
+      }
+      this.logger.log('perspective_change', this.snapshot());
+      this.onChange();
+    });
+
     this.pauseBtn.addEventListener('click', () => {
       this.state.paused = !this.state.paused;
       this.pauseBtn.textContent = this.state.paused ? '继续' : '暂停';
@@ -68,7 +81,8 @@ export class ControlPanel {
     return {
       beta: this.state.beta,
       frame: this.state.frame,
-      viewMode: this.state.viewMode
+      viewMode: this.state.viewMode,
+      viewPerspective: this.state.viewPerspective
     };
   }
 }
