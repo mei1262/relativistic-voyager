@@ -2,18 +2,7 @@ import * as THREE from 'three';
 import { lengthContractionRatio } from '../physics/relativity.js';
 
 export class MeasurementRod {
-  /**
-   * @param {string} [labelText='Measurement Rod'] — sprite label text
-   * @param {object}  [offset] — position offset relative to reference point
-   * @param {number}  [offset.x=-2.8]
-   * @param {number}  [offset.y=-1.4]
-   * @param {number}  [offset.z=-6]
-   */
-  constructor(labelText = 'Measurement Rod', offset = {}) {
-    this.offsetX = offset.x ?? -2.8;
-    this.offsetY = offset.y ?? -1.4;
-    this.offsetZ = offset.z ?? -6;
-
+  constructor() {
     this.group = new THREE.Group();
     const rodMaterial = new THREE.MeshStandardMaterial({ color: 0xffd36b, roughness: 0.45, metalness: 0.05 });
     this.rod = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.18, 5.2), rodMaterial);
@@ -27,11 +16,12 @@ export class MeasurementRod {
       this.group.add(tick);
     }
 
-    this.labelSprite = this.makeLabel(labelText);
+    this.labelSprite = this.makeLabel('Measurement Rod');
     this.labelSprite.position.set(0, 0.65, 0);
 
     this.group.add(this.rod, this.labelSprite);
-    this.group.position.set(this.offsetX, this.offsetY, this.offsetZ);
+    this.group.position.set(-2.8, -1.4, -6);
+    this.group.rotation.y = -0.25;
   }
 
   makeLabel(text) {
@@ -59,11 +49,7 @@ export class MeasurementRod {
    * Position the measurement rod relative to a reference point (e.g., the spacecraft).
    */
   setReferencePosition(refX, refY, refZ) {
-    this.group.position.set(
-      refX + this.offsetX,
-      refY + this.offsetY,
-      refZ + this.offsetZ
-    );
+    this.group.position.set(refX - 2.8, refY - 1.4, refZ - 6);
   }
 
   update(beta, viewMode) {

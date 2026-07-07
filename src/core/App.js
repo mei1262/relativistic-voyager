@@ -8,16 +8,14 @@ import { ControlPanel } from '../ui/ControlPanel.js';
 import { MissionSystem } from '../ui/MissionSystem.js';
 import { ConceptPanel } from '../ui/ConceptPanel.js';
 import { QuizSystem } from '../ui/QuizSystem.js';
-import { DualClockPanel } from '../ui/DualClockPanel.js';
 import { StarField } from '../visual/StarField.js';
 import { Spacecraft } from '../visual/Spacecraft.js';
 import { CockpitInterior } from '../visual/CockpitInterior.js';
-import { MeasurementRod } from '../visual/MeasurementRod.js';
 import { SpacetimeDiagram } from '../visual/SpacetimeDiagram.js';
 import { SolarSystem, PLANET_INFO } from '../visual/SolarSystem.js';
 import { addReferenceScene } from '../visual/SceneObjects.js';
 import { EngineAudio } from '../audio/EngineAudio.js';
-import { computeRelativityState, DEFAULT_TARGET_DISTANCE_LY, lengthContractionRatio } from '../physics/relativity.js';
+import { computeRelativityState, DEFAULT_TARGET_DISTANCE_LY } from '../physics/relativity.js';
 
 /**
  * RelativisticVoyagerApp — main application controller.
@@ -158,25 +156,12 @@ export class RelativisticVoyagerApp {
     this.cockpit = new CockpitInterior();
     this.cockpit.attachTo(this.camera);
     this.cockpit.hide();
-
-    // Dual measurement rods for length-contraction visualization (CHANGE.md L1)
-    // Rod A: parallel to motion direction (-Z), contracts with 1/γ in Earth frame
-    this.rodParallel = new MeasurementRod('杆 A // 运动方向', { x: -5, y: -1.4, z: -8 });
-    this.rodParallel.group.rotation.y = 0; // aligned with -Z (ship forward)
-    this.rodParallel.addTo(this.scene);
-
-    // Rod B: perpendicular to motion direction (along X), never contracts
-    this.rodPerpendicular = new MeasurementRod('杆 B ⊥ 运动方向', { x: 5, y: -1.4, z: -8 });
-    this.rodPerpendicular.group.rotation.y = Math.PI / 2; // aligned with X
-    this.rodPerpendicular.addTo(this.scene);
   }
 
   // ---- UI --------------------------------------------------------------------
 
   setupUi() {
     this.hud = new Hud(this.state);
-    this.dualClock = new DualClockPanel(this.state);
-    this.dualClock.init();
     this.controlPanel = new ControlPanel(this.state, this.logger);
     this.controlPanel.onChange = () => this.onStateChanged();
     this.controlPanel.init();
@@ -267,14 +252,10 @@ export class RelativisticVoyagerApp {
     if (mode === 'firstPerson') {
       this.camera.fov = 90;
       this.spacecraft.group.visible = false;
-      this.rodParallel.group.visible = false;
-      this.rodPerpendicular.group.visible = false;
       this.cockpit.show();
     } else {
       this.camera.fov = this.baseFov;
       this.spacecraft.group.visible = true;
-      this.rodParallel.group.visible = true;
-      this.rodPerpendicular.group.visible = true;
       this.cockpit.hide();
     }
     this.camera.updateProjectionMatrix();
@@ -365,7 +346,6 @@ export class RelativisticVoyagerApp {
       this.camera.aspect = window.innerWidth / window.innerHeight;
       this.camera.updateProjectionMatrix();
       this.renderer.setSize(window.innerWidth, window.innerHeight);
-      this.dualClock.resize();
     });
   }
 
@@ -537,32 +517,6 @@ export class RelativisticVoyagerApp {
     if (this.keys.down) verticalInput -= 1;
     this.spacecraft.update(this.state.beta, this.keys.forward, verticalInput);
 
-    // ---- Measurement rods — follow the spacecraft (CHANGE.md L1 + L4) ---------
-    const sp = this.shipPosition;
-    this.rodParallel.setReferencePosition(sp.x, sp.y, sp.z);
-    this.rodPerpendicular.setReferencePosition(sp.x, sp.y, sp.z);
-
-    // Rod A (parallel to motion): contracts only in Earth frame
-    const applyContraction = this.state.frame === 'earth';
-    this.rodParallel.update(
-      applyContraction ? this.state.beta : 0,
-      this.state.viewMode
-    );
-    // Rod B (perpendicular): never contracts — transverse length is invariant
-    this.rodPerpendicular.update(0, this.state.viewMode);
-
-    // ---- Spacecraft length contraction (CHANGE.md L2) -------------------------
-    const baseScale = 0.12;
-    const ratio = lengthContractionRatio(this.state.beta);
-    if (this.state.frame === 'earth'
-        && this.state.viewMode === 'measured'
-        && this.state.beta > 0.01) {
-      // Only scale Z (motion direction); X / Y unchanged
-      this.spacecraft.group.scale.set(baseScale, baseScale, baseScale * ratio);
-    } else {
-      this.spacecraft.group.scale.setScalar(baseScale);
-    }
-
     // Cockpit interior — animate indicator lights
     this.cockpit.update(dt, this.state.beta);
     // Engine audio — pitch & volume track current speed (mute when paused)
@@ -572,7 +526,6 @@ export class RelativisticVoyagerApp {
       this.engineAudio.update(this.currentSpeed / this.maxSpeed, this.keys.forward);
     }
     this.hud.update();
-    this.dualClock.update(r);
     this.missionSystem.update();
     this.spacetimeDiagram.update();
 
