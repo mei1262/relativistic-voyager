@@ -85,8 +85,6 @@ export class RelativisticVoyagerApp {
 
     // Relativistic visual effects
     this.baseFov = 65;        // camera FOV at rest
-    this._lastAberrationBeta = -1;   // cached beta for stellar aberration
-    this._aberrationActive = false;  // whether aberration is currently applied
 
     // Raycaster for planet click detection
     this.raycaster = new THREE.Raycaster();
@@ -143,8 +141,8 @@ export class RelativisticVoyagerApp {
     // Reference scene: target star + lighting (no grid, no standalone Earth)
     this.refs = addReferenceScene(this.scene);
 
-    // Star field — rich static field (5000 stars + Milky Way, radius 3000)
-    this.starField = new StarField({ count: 8000, radius: 3000 });
+    // Star field — 单次生成点云，Shader 内完成光行差/头灯效应/多普勒频移
+    this.starField = new StarField({ count: 24000, radius: 3000 });
     this.starField.addTo(this.scene);
 
     // Spacecraft — scaled down 10× (0.12 vs original 1.2)
@@ -377,6 +375,8 @@ export class RelativisticVoyagerApp {
 
   // ---- Main update loop ------------------------------------------------------
 
+  // ---- Main update loop ------------------------------------------------------
+
   update() {
     const dt = Math.min(0.05, this.clock.getDelta());
     const r = computeRelativityState(this.state);
@@ -430,9 +430,9 @@ export class RelativisticVoyagerApp {
       this.shipPosition.y = Math.max(-115, Math.min(2000, this.shipPosition.y));
 
       // ---- Collision detection (solid planets + Sun) ---------------------------
-      const shipR = 2.5; // small buffer around ship
+      const shipR = 2.5; 
 
-      // Sun collision (origin, radius = 1.2 × SCALE = 120)
+      // Sun collision 
       const sunR = 120 + shipR;
       const sunDist = this.shipPosition.length();
       if (sunDist < sunR && sunDist > 0.001) {
@@ -443,7 +443,7 @@ export class RelativisticVoyagerApp {
       // Planet collisions
       for (const p of this.solarSystem.planets) {
         const px = p.group.position.x, pz = p.group.position.z;
-        const pR = p.def.radius * 100 + shipR; // SCALE = 100
+        const pR = p.def.radius * 100 + shipR; 
         const dx = this.shipPosition.x - px;
         const dz = this.shipPosition.z - pz;
         const dist = Math.sqrt(dx * dx + dz * dz);
@@ -474,16 +474,13 @@ export class RelativisticVoyagerApp {
 
     // ---- Camera (first-person cockpit or third-person chase cam) --------------
     if (this.state.viewPerspective === 'firstPerson') {
-      // First-person: camera at cockpit position, looking forward
       const fpOffset = this.firstPersonOffset.clone();
       fpOffset.applyAxisAngle(new THREE.Vector3(0, 1, 0), this.shipHeading);
       const fpCamPos = this.shipPosition.clone().add(fpOffset);
 
-      // Faster lerp for responsive first-person feel
       this._smoothCamPos.lerp(fpCamPos, this.cameraLerp * 2.0);
       this.camera.position.copy(this._smoothCamPos);
 
-      // Look in ship's forward direction (a point far ahead)
       const forward = new THREE.Vector3(
         -Math.sin(this.shipHeading), 0, -Math.cos(this.shipHeading)
       );
@@ -492,7 +489,6 @@ export class RelativisticVoyagerApp {
       );
       this.camera.lookAt(lookTarget);
     } else {
-      // Third-person: chase cam behind the spacecraft
       const rotatedOffset = this.cameraLocalOffset.clone();
       rotatedOffset.applyAxisAngle(new THREE.Vector3(0, 1, 0), this.shipHeading);
       const desiredCamPos = this.shipPosition.clone().add(rotatedOffset);
@@ -502,30 +498,36 @@ export class RelativisticVoyagerApp {
       this.camera.lookAt(this.shipPosition);
     }
 
-    // ---- Relativistic visual effects -------------------------------------------
-    // Vignette overlay — darkens periphery at high β for tunnel sensation
-    const b = this.state.beta;
+    // ==========================================
+    // 💡 核心视觉耦合修改：动态解耦与实际速度绑定
+    // ==========================================
+    
+    // 1. 计算当前飞船真正的物理 Beta（即：实际速度占光速上限的百分比）
+    // 通过 currentSpeed / maxSpeed 映射，当不按 W 静止或未加速时，它为 0；按住 W 满速时达到设定上限 this.state.beta
+    let actualBeta = 0;
+    if (this.maxSpeed > 0) {
+      actualBeta = (this.currentSpeed / this.maxSpeed);
+    }
+    // 确保值平滑处于合法区间
+    actualBeta = THREE.MathUtils.clamp(actualBeta, 0.0, 0.999);
+
+    // 2. 暗角（Vignette Overlay）特效现在跟随实际物理运动速度
     const vignette = document.getElementById('tunnel-vignette');
     if (vignette) {
-      vignette.style.opacity = Math.min(0.92, b * 1.1);
+      vignette.style.opacity = Math.min(0.92, actualBeta * 1.1);
     }
 
-    // Stellar aberration — first-person only, recompute only when beta changes
-    if (this.state.viewPerspective === 'firstPerson') {
-      if (!this._aberrationActive || Math.abs(b - this._lastAberrationBeta) > 0.001) {
-        if (b > 0.001) {
-          this.starField.applyAberration(b);
-        } else {
-          this.starField.resetAberration();
-        }
-        this._lastAberrationBeta = b;
-        this._aberrationActive = true;
-      }
-    } else if (this._aberrationActive) {
-      this.starField.resetAberration();
-      this._aberrationActive = false;
-      this._lastAberrationBeta = -1;
-    }
+    // 3. 星空星field变换（头灯效应、光行差、多普勒）
+    // 移除旧版必须是 firstPerson 的严苛限制，让第三人称也能正确观测到速度带来的相对论星空变化
+    let visualBeta = Math.max(0.0001, actualBeta); 
+
+    const starfieldVelocityDir = new THREE.Vector3(
+      -Math.sin(this.shipHeading), 0, -Math.cos(this.shipHeading)
+    ).normalize();
+    
+    // 传入根据当前实际加速进度计算出的 visualBeta
+    this.starField.setRelativisticState(visualBeta, starfieldVelocityDir);
+    // ==========================================
 
     // ---- Animate solar system -------------------------------------------------
     if (this.solarSystem) {
@@ -533,8 +535,8 @@ export class RelativisticVoyagerApp {
     }
 
     // ---- Visual modules -------------------------------------------------------
-    this.starField.update(this.state.beta);
-    // Vertical input for spacecraft pitch: +1 nose-up (Q), -1 nose-down (E)
+    this.starField.update(dt);
+    
     let verticalInput = 0;
     if (this.keys.up)   verticalInput += 1;
     if (this.keys.down) verticalInput -= 1;
@@ -543,8 +545,7 @@ export class RelativisticVoyagerApp {
     // ---- Spacecraft length contraction (Earth frame) ----------------------------
     const baseScale = 0.12;
     const ratio = lengthContractionRatio(this.state.beta);
-    if (this.state.frame === 'earth'
-        && this.state.beta > 0.01) {
+    if (this.state.frame === 'earth' && this.state.beta > 0.01) {
       if (this.state.viewMode === 'measured') {
         this.spacecraft.group.scale.set(baseScale, baseScale, baseScale * ratio);
         this.spacecraft.group.rotation.x = 0;
@@ -559,12 +560,14 @@ export class RelativisticVoyagerApp {
 
     // Cockpit interior — animate indicator lights
     this.cockpit.update(dt, this.state.beta);
+    
     // Engine audio — pitch & volume track current speed (mute when paused)
     if (this.state.paused) {
       this.engineAudio.mute();
     } else {
       this.engineAudio.update(this.currentSpeed / this.maxSpeed, this.keys.forward);
     }
+    
     this.hud.update();
     this.dualClock.update(r);
     this.missionSystem.update();
