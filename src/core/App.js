@@ -10,11 +10,13 @@ import { ConceptPanel } from '../ui/ConceptPanel.js';
 import { QuizSystem } from '../ui/QuizSystem.js';
 import { StarField } from '../visual/StarField.js';
 import { Spacecraft } from '../visual/Spacecraft.js';
+import { CockpitInterior } from '../visual/CockpitInterior.js';
+import { DualClockPanel } from '../ui/DualClockPanel.js';
 import { SpacetimeDiagram } from '../visual/SpacetimeDiagram.js';
 import { SolarSystem, PLANET_INFO } from '../visual/SolarSystem.js';
 import { addReferenceScene } from '../visual/SceneObjects.js';
 import { EngineAudio } from '../audio/EngineAudio.js';
-import { computeRelativityState, DEFAULT_TARGET_DISTANCE_LY } from '../physics/relativity.js';
+import { computeRelativityState, DEFAULT_TARGET_DISTANCE_LY, lengthContractionRatio } from '../physics/relativity.js';
 
 /**
  * RelativisticVoyagerApp — main application controller.
@@ -28,9 +30,10 @@ import { computeRelativityState, DEFAULT_TARGET_DISTANCE_LY } from '../physics/r
  * - E             : move down
  * - Shift         : increase speed (beta)
  * - Ctrl          : decrease speed (beta)
+ * - V             : toggle first-person / third-person view
  * - Speed = beta (0–0.99) × maxSpeed
  *
- * Camera: fixed third-person chase cam behind the spacecraft.
+ * Camera: supports first-person (cockpit) and third-person chase cam.
  * Star field: rich, static, centered at origin.
  * Planet info: click any planet to see details.
  */
@@ -40,6 +43,7 @@ export class RelativisticVoyagerApp {
       beta: 0,
       frame: 'earth',
       viewMode: 'measured',
+      viewPerspective: 'thirdPerson',
       paused: false,
       earthTime: 0,
       earthDistance: DEFAULT_TARGET_DISTANCE_LY,
@@ -52,6 +56,9 @@ export class RelativisticVoyagerApp {
 
     // Camera offset in ship-local space (small — ship is scaled down 10×)
     this.cameraLocalOffset = new THREE.Vector3(0, 0.4, 1.2);
+
+    // First-person cockpit camera offset (ship-local space, ship scale 0.12)
+    this.firstPersonOffset = new THREE.Vector3(0, 0.06, -0.05);
 
     // Keyboard state
     this.keys = {
@@ -134,8 +141,8 @@ export class RelativisticVoyagerApp {
     // Reference scene: target star + lighting (no grid, no standalone Earth)
     this.refs = addReferenceScene(this.scene);
 
-    // Star field — rich static field (5000 stars + Milky Way, radius 3000)
-    this.starField = new StarField({ count: 8000, radius: 3000 });
+    // Star field — 单次生成点云，Shader 内完成光行差/头灯效应/多普勒频移
+    this.starField = new StarField({ count: 24000, radius: 3000 });
     this.starField.addTo(this.scene);
 
     // Spacecraft — scaled down 10× (0.12 vs original 1.2)
@@ -145,12 +152,19 @@ export class RelativisticVoyagerApp {
     this.spacecraft.setWorldPosition(
       this.shipPosition.x, this.shipPosition.y, this.shipPosition.z
     );
+
+    // Cockpit interior — attached to camera, shown only in first-person
+    this.cockpit = new CockpitInterior();
+    this.cockpit.attachTo(this.camera);
+    this.cockpit.hide();
   }
 
   // ---- UI --------------------------------------------------------------------
 
   setupUi() {
     this.hud = new Hud(this.state);
+    this.dualClock = new DualClockPanel(this.state);
+    this.dualClock.init();
     this.controlPanel = new ControlPanel(this.state, this.logger);
     this.controlPanel.onChange = () => this.onStateChanged();
     this.controlPanel.init();
@@ -202,6 +216,12 @@ export class RelativisticVoyagerApp {
       this.engineAudio.init();
     }
 
+    // V key — toggle perspective (only on press, not release)
+    if (key === 'v' || key === 'V') {
+      if (pressed) this._togglePerspective();
+      return;
+    }
+
     if (key === 'ArrowUp'    || key === 'w' || key === 'W') this.keys.forward  = pressed;
     if (key === 'ArrowDown'  || key === 's' || key === 'S') this.keys.backward = pressed;
     if (key === 'ArrowLeft'  || key === 'a' || key === 'A') this.keys.left     = pressed;
@@ -210,6 +230,43 @@ export class RelativisticVoyagerApp {
     if (key === 'e' || key === 'E') this.keys.down = pressed;
     if (key === 'Shift')   this.keys.shift = pressed;
     if (key === 'Control') this.keys.ctrl  = pressed;
+  }
+
+  /** Toggle between third-person and first-person perspective */
+  _togglePerspective() {
+    const next = this.state.viewPerspective === 'thirdPerson'
+      ? 'firstPerson' : 'thirdPerson';
+    this._setPerspective(next);
+  }
+
+  /**
+   * Set perspective to a specific mode. Called by V-key toggle and UI dropdown.
+   * @param {'firstPerson' | 'thirdPerson'} mode
+   */
+  _setPerspective(mode) {
+    if (this.state.viewPerspective === mode) return;
+    this.state.viewPerspective = mode;
+
+    // Sync the dropdown in the control panel
+    const sel = document.getElementById('perspective-select');
+    if (sel) sel.value = mode;
+
+    // Adjust FOV: wider for first-person immersion
+    if (mode === 'firstPerson') {
+      this.camera.fov = 90;
+      this.spacecraft.group.visible = false;
+      this.cockpit.show();
+    } else {
+      this.camera.fov = this.baseFov;
+      this.spacecraft.group.visible = true;
+      this.cockpit.hide();
+    }
+    this.camera.updateProjectionMatrix();
+
+    this.logger.log('perspective_change', {
+      viewPerspective: mode,
+      fov: this.camera.fov
+    });
   }
 
   // ---- Mouse / Planet click detection ----------------------------------------
@@ -292,6 +349,7 @@ export class RelativisticVoyagerApp {
       this.camera.aspect = window.innerWidth / window.innerHeight;
       this.camera.updateProjectionMatrix();
       this.renderer.setSize(window.innerWidth, window.innerHeight);
+      this.dualClock.resize();
     });
   }
 
@@ -314,6 +372,8 @@ export class RelativisticVoyagerApp {
     this.hud.update();
     this.spacetimeDiagram.update();
   }
+
+  // ---- Main update loop ------------------------------------------------------
 
   // ---- Main update loop ------------------------------------------------------
 
@@ -370,9 +430,9 @@ export class RelativisticVoyagerApp {
       this.shipPosition.y = Math.max(-115, Math.min(2000, this.shipPosition.y));
 
       // ---- Collision detection (solid planets + Sun) ---------------------------
-      const shipR = 2.5; // small buffer around ship
+      const shipR = 2.5; 
 
-      // Sun collision (origin, radius = 1.2 × SCALE = 120)
+      // Sun collision 
       const sunR = 120 + shipR;
       const sunDist = this.shipPosition.length();
       if (sunDist < sunR && sunDist > 0.001) {
@@ -383,7 +443,7 @@ export class RelativisticVoyagerApp {
       // Planet collisions
       for (const p of this.solarSystem.planets) {
         const px = p.group.position.x, pz = p.group.position.z;
-        const pR = p.def.radius * 100 + shipR; // SCALE = 100
+        const pR = p.def.radius * 100 + shipR; 
         const dx = this.shipPosition.x - px;
         const dz = this.shipPosition.z - pz;
         const dist = Math.sqrt(dx * dx + dz * dz);
@@ -412,22 +472,62 @@ export class RelativisticVoyagerApp {
       }
     }
 
-    // ---- Camera (fixed chase cam behind ship) ---------------------------------
-    const rotatedOffset = this.cameraLocalOffset.clone();
-    rotatedOffset.applyAxisAngle(new THREE.Vector3(0, 1, 0), this.shipHeading);
-    const desiredCamPos = this.shipPosition.clone().add(rotatedOffset);
+    // ---- Camera (first-person cockpit or third-person chase cam) --------------
+    if (this.state.viewPerspective === 'firstPerson') {
+      const fpOffset = this.firstPersonOffset.clone();
+      fpOffset.applyAxisAngle(new THREE.Vector3(0, 1, 0), this.shipHeading);
+      const fpCamPos = this.shipPosition.clone().add(fpOffset);
 
-    this._smoothCamPos.lerp(desiredCamPos, this.cameraLerp);
-    this.camera.position.copy(this._smoothCamPos);
-    this.camera.lookAt(this.shipPosition);
+      this._smoothCamPos.lerp(fpCamPos, this.cameraLerp * 2.0);
+      this.camera.position.copy(this._smoothCamPos);
 
-    // ---- Relativistic visual effects -------------------------------------------
-    // Vignette overlay — darkens periphery at high β for tunnel sensation
-    const b = this.state.beta;
+      const forward = new THREE.Vector3(
+        -Math.sin(this.shipHeading), 0, -Math.cos(this.shipHeading)
+      );
+      const lookTarget = this.shipPosition.clone().add(
+        forward.multiplyScalar(100)
+      );
+      this.camera.lookAt(lookTarget);
+    } else {
+      const rotatedOffset = this.cameraLocalOffset.clone();
+      rotatedOffset.applyAxisAngle(new THREE.Vector3(0, 1, 0), this.shipHeading);
+      const desiredCamPos = this.shipPosition.clone().add(rotatedOffset);
+
+      this._smoothCamPos.lerp(desiredCamPos, this.cameraLerp);
+      this.camera.position.copy(this._smoothCamPos);
+      this.camera.lookAt(this.shipPosition);
+    }
+
+    // ==========================================
+    // 💡 核心视觉耦合修改：动态解耦与实际速度绑定
+    // ==========================================
+    
+    // 1. 计算当前飞船真正的物理 Beta（即：实际速度占光速上限的百分比）
+    // 通过 currentSpeed / maxSpeed 映射，当不按 W 静止或未加速时，它为 0；按住 W 满速时达到设定上限 this.state.beta
+    let actualBeta = 0;
+    if (this.maxSpeed > 0) {
+      actualBeta = (this.currentSpeed / this.maxSpeed);
+    }
+    // 确保值平滑处于合法区间
+    actualBeta = THREE.MathUtils.clamp(actualBeta, 0.0, 0.999);
+
+    // 2. 暗角（Vignette Overlay）特效现在跟随实际物理运动速度
     const vignette = document.getElementById('tunnel-vignette');
     if (vignette) {
-      vignette.style.opacity = Math.min(0.92, b * 1.1);
+      vignette.style.opacity = Math.min(0.92, actualBeta * 1.1);
     }
+
+    // 3. 星空星field变换（头灯效应、光行差、多普勒）
+    // 移除旧版必须是 firstPerson 的严苛限制，让第三人称也能正确观测到速度带来的相对论星空变化
+    let visualBeta = Math.max(0.0001, actualBeta); 
+
+    const starfieldVelocityDir = new THREE.Vector3(
+      -Math.sin(this.shipHeading), 0, -Math.cos(this.shipHeading)
+    ).normalize();
+    
+    // 传入根据当前实际加速进度计算出的 visualBeta
+    this.starField.setRelativisticState(visualBeta, starfieldVelocityDir);
+    // ==========================================
 
     // ---- Animate solar system -------------------------------------------------
     if (this.solarSystem) {
@@ -435,19 +535,41 @@ export class RelativisticVoyagerApp {
     }
 
     // ---- Visual modules -------------------------------------------------------
-    this.starField.update(this.state.beta);
-    // Vertical input for spacecraft pitch: +1 nose-up (Q), -1 nose-down (E)
+    this.starField.update(dt);
+    
     let verticalInput = 0;
     if (this.keys.up)   verticalInput += 1;
     if (this.keys.down) verticalInput -= 1;
     this.spacecraft.update(this.state.beta, this.keys.forward, verticalInput);
+
+    // ---- Spacecraft length contraction (Earth frame) ----------------------------
+    const baseScale = 0.12;
+    const ratio = lengthContractionRatio(this.state.beta);
+    if (this.state.frame === 'earth' && this.state.beta > 0.01) {
+      if (this.state.viewMode === 'measured') {
+        this.spacecraft.group.scale.set(baseScale, baseScale, baseScale * ratio);
+        this.spacecraft.group.rotation.x = 0;
+      } else {
+        this.spacecraft.group.scale.set(baseScale, baseScale, baseScale * (ratio * 0.92 + 0.08));
+        this.spacecraft.group.rotation.x = this.state.beta * 0.3;
+      }
+    } else {
+      this.spacecraft.group.scale.setScalar(baseScale);
+      this.spacecraft.group.rotation.x = 0;
+    }
+
+    // Cockpit interior — animate indicator lights
+    this.cockpit.update(dt, this.state.beta);
+    
     // Engine audio — pitch & volume track current speed (mute when paused)
     if (this.state.paused) {
       this.engineAudio.mute();
     } else {
       this.engineAudio.update(this.currentSpeed / this.maxSpeed, this.keys.forward);
     }
+    
     this.hud.update();
+    this.dualClock.update(r);
     this.missionSystem.update();
     this.spacetimeDiagram.update();
 
